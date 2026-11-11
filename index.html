@@ -327,7 +327,7 @@ async function pdf(all){
   links.forEach(l=>{if(bp[l.n]){d.setPage(l.pg);d.link(l.x,l.y,l.w,l.h,{pageNumber:bp[l.n]})}});
   const n=d.getNumberOfPages();
   for(let i=1;i<=n;i++){d.setPage(i);d.setFont('helvetica','normal');d.setFontSize(8);d.setTextColor(140);d.text(`Page ${i} of ${n}`,W/2,291,{align:'center'})}
-  try{await dl.save({filename:'ShootBook-'+(all?'all-shoots':T(ss[0].client||ss[0].name).replace(/[^\w]+/g,'-'))+'.pdf',data:d.output('blob')})}catch(e){if(!e||e.code!=='declined')note('The PDF could not be saved. Try again.')}
+  try{await dl.save({filename:(all?'All-clients':T(ss[0].client||ss[0].name).replace(/[^\w]+/g,'-').replace(/^-|-$/g,'')||'Shoot')+(all?'':'-'+dfmt(ss[0].date).replace(/ /g,'-'))+'.pdf',data:d.output('blob')})}catch(e){if(!e||e.code!=='declined')note('The PDF could not be saved. Try again.')}
 }
 try{navigator.storage&&navigator.storage.persist&&navigator.storage.persist()}catch(e){}
 home();
