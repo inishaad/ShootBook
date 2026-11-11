@@ -53,15 +53,24 @@ const fget=async k=>{const d=await idb();return new Promise((ok,no)=>{const r=d.
 const fdel=async k=>{try{const d=await idb();d.transaction('f','readwrite').objectStore('f').delete(k)}catch(e){}};
 const rd=f=>new Promise((ok,no)=>{const r=new FileReader();r.onload=()=>ok(r.result);r.onerror=no;r.readAsDataURL(f)});
 const blobOf=u=>{const[h,b]=u.split(','),m=h.match(/:(.*?);/)[1],s=atob(b),a=new Uint8Array(s.length);for(let i=0;i<s.length;i++)a[i]=s.charCodeAt(i);return new Blob([a],{type:m})};
+let perr='';
 async function prep(f){
-  const img=f.type.startsWith('image/');let data=await rd(f);
-  if(img)data=await new Promise(ok=>{const i=new Image();i.onload=()=>{const k=Math.min(1,1400/Math.max(i.width,i.height)),c=document.createElement('canvas');c.width=Math.round(i.width*k);c.height=Math.round(i.height*k);c.getContext('2d').drawImage(i,0,0,c.width,c.height);ok(c.toDataURL('image/jpeg',.7))};i.onerror=()=>ok(data);i.src=data});
-  return{id:uid(),name:f.name||'bill',type:img?'image':f.type==='application/pdf'?'pdf':'file',data};
+  if(!f.type.startsWith('image/')){
+    if(f.size>15e6)throw new Error('big');
+    return{id:uid(),name:f.name||'bill',type:f.type==='application/pdf'?'pdf':'file',data:await rd(f)};
+  }
+  let b;
+  try{b=await createImageBitmap(f)}catch(e){b=await new Promise((ok,no)=>{const u=URL.createObjectURL(f),i=new Image();i.onload=()=>{URL.revokeObjectURL(u);ok(i)};i.onerror=no;i.src=u})}
+  const w=b.width,h=b.height,k=Math.min(1,1280/Math.max(w,h)),c=document.createElement('canvas');
+  c.width=Math.max(1,Math.round(w*k));c.height=Math.max(1,Math.round(h*k));
+  c.getContext('2d').drawImage(b,0,0,c.width,c.height);if(b.close)b.close();
+  const data=c.toDataURL('image/jpeg',.65);c.width=c.height=0;
+  return{id:uid(),name:f.name||'bill.jpg',type:'image',data};
 }
-async function readAll(inp){const out=[];for(const f of [...inp.files]){if(f.size>15e6)continue;try{out.push(await prep(f))}catch(e){}}inp.value='';return out}
-async function store(ps){const r=[];for(const p of ps){try{await fput(p.id,{name:p.name,type:p.type,data:p.data});r.push({id:p.id,name:p.name,type:p.type})}catch(e){}}return r}
+async function readAll(inp){perr='';const out=[];for(const f of [...inp.files]){try{out.push(await prep(f))}catch(e){perr='Could not read '+(f.name||'a file')+'. PDFs must be under 15 MB, or try taking the photo again.'}}inp.value='';return out}
+async function store(ps){const r=[];for(const p of ps){try{await fput(p.id,{name:p.name,type:p.type,data:p.data});r.push({id:p.id,name:p.name,type:p.type})}catch(e){perr='Not enough storage on this phone to save the bill. Free some space and try again.'}}return r}
 async function addFiles(inp){pend.push(...await readAll(inp));drawPend()}
-function drawPend(){const b=$('#pend');if(b)b.innerHTML=pend.map((p,i)=>`<div class="th">${p.type==='image'?`<img src="${p.data}" alt="">`:'PDF'}<b onclick="pend.splice(${i},1);drawPend()">×</b></div>`).join('')}
+function drawPend(){const b=$('#pend');if(b)b.innerHTML=pend.map((p,i)=>`<div class="th">${p.type==='image'?`<img src="${p.data}" alt="">`:'PDF'}<b onclick="pend.splice(${i},1);drawPend()">×</b></div>`).join('')+(perr?`<div style="flex-basis:100%;color:var(--red);font-size:13px">${perr}</div>`:'')}
 const bt=e=>{const n=(e.files||[]).length;return n?(e.note?' · ':'')+n+(n>1?' bills':' bill'):''};
 let S={shoots:[]},cur=null,cat='Fuel';
 try{S=JSON.parse(localStorage.getItem(K))||S}catch(e){}
@@ -85,7 +94,7 @@ function home(){
   const ts=S.shoots.reduce((a,s)=>a+spent(s),0),tg=S.shoots.reduce((a,s)=>a+got(s),0),owed=ts-tg;
   const list=[...S.shoots].sort((a,b)=>b.date.localeCompare(a.date)).map(s=>{
     const b=bal(s);
-    return `<div class="card" onclick="openShoot('${s.id}')"><div><div class="t">${esc(s.name)}</div><div class="s">${esc(s.client?s.client+', ':'')}${dfmt(s.date)}</div></div><div class="amt ${b>0?'red':'green'}">${fmt(Math.abs(b))}<small>${b>0?'to claim':b<0?'extra received':'settled'}</small></div></div>`}).join('');
+    return `<div class="card" onclick="openShoot('${s.id}')"><div><div class="t">${esc(s.client||s.name)}</div><div class="s">${esc(s.client&&s.name?s.name+' · ':'')}${dfmt(s.date)}</div></div><div class="amt ${b>0?'red':'green'}">${fmt(Math.abs(b))}<small>${b>0?'to claim':b<0?'extra received':'settled'}</small></div></div>`}).join('');
   $('#app').innerHTML=`<h1 style="margin-bottom:0">ShootBook</h1><button class="back" style="margin-bottom:12px" onclick="setName()">Name on PDF: ${esc(who())} · change</button>
   <div class="slate"><div class="stripes"></div><div class="in"><small>Company owes you</small><div class="big">${fmt(owed)}</div>
   <div class="row2"><div><small>You spent</small><b>${fmt(ts)}</b></div><div><small>You received</small><b>${fmt(tg)}</b></div></div></div></div>
@@ -93,13 +102,16 @@ function home(){
   <div class="fab"><button class="btn b-ink" onclick="newShoot()">Add shoot</button></div>`;
 }
 
-function newShoot(){
-  sheet(`<h1>New shoot</h1><label>Shoot name</label><input id="n" placeholder="e.g. Fruitogen ad shoot"><label>Client or location (optional)</label><input id="c"><label>Date</label><input id="d" type="date" value="${today()}"><div class="gap"></div><button class="btn b-ink" onclick="saveShoot()">Save shoot</button>`);
-  setTimeout(()=>$('#n').focus(),50);
+function newShoot(sid){
+  const o=sid?find(sid):null;
+  sheet(`<h1>${o?'Edit shoot':'New shoot'}</h1><label>Client name</label><input id="c" value="${o?esc(o.client):''}" placeholder="e.g. Fruitogen"><label>Shoot name (optional)</label><input id="n" value="${o?esc(o.name):''}" placeholder="e.g. Summer ad shoot"><label>Date</label><input id="d" type="date" value="${o?o.date:today()}"><div class="gap"></div><button class="btn b-ink" onclick="saveShoot('${sid||''}')">Save shoot</button>`);
+  setTimeout(()=>$('#c').focus(),50);
 }
-function saveShoot(){
-  const name=$('#n').value.trim();if(!name){$('#n').focus();return}
-  const s={id:uid(),name,client:$('#c').value.trim(),date:$('#d').value||today(),entries:[]};
+function saveShoot(sid){
+  const name=$('#n').value.trim();if(!$('#c').value.trim()){$('#c').focus();return}
+  const v={name,client:$('#c').value.trim(),date:$('#d').value||today()},o=sid&&find(sid);
+  if(o){Object.assign(o,v);save();closeS();openShoot(o.id);return}
+  const s={id:uid(),...v,entries:[]};
   S.shoots.push(s);save();closeS();openShoot(s.id);
 }
 
@@ -112,7 +124,7 @@ function openShoot(id){
     if(e.date!==last){html+=`<div class="day">${dfmt(e.date)}</div>`;last=e.date}
     html+=`<div class="card" onclick="entryMenu('${e.id}')"><div><div class="t">${e.type==='spent'?esc(e.cat):'Received from company'}</div><div class="s">${esc(e.note)}${bt(e)}</div></div><div class="amt ${e.type==='spent'?'red':'green'}">${e.type==='spent'?'−':'+'}${fmt(e.amt)}</div></div>`;
   });
-  $('#app').innerHTML=`<div style="display:flex;justify-content:space-between"><button class="back" onclick="home()">‹ All shoots</button><button class="back" style="color:var(--red)" onclick="delShoot()">Delete shoot</button></div><h1>${esc(s.name)}</h1>
+  $('#app').innerHTML=`<div style="display:flex;justify-content:space-between"><button class="back" onclick="home()">‹ All shoots</button><span><button class="back" onclick="newShoot('${s.id}')">Edit</button><button class="back" style="color:var(--red);margin-left:14px" onclick="delShoot()">Delete</button></span></div><h1 style="margin-bottom:2px">${esc(s.client||s.name)}</h1><div style="color:var(--mut);margin-bottom:14px">${esc(s.client&&s.name?s.name+' · ':'')}${dfmt(s.date)}</div>
   <div class="slate"><div class="stripes"></div><div class="in"><small>${b>=0?'To claim from company':'Extra received'}</small><div class="big">${fmt(Math.abs(b))}</div>
   <div class="row2"><div><small>Spent</small><b>${fmt(spent(s))}</b></div><div><small>Received</small><b>${fmt(got(s))}</b></div></div></div></div>
   <div class="two" style="margin-bottom:6px"><button class="btn b-ghost" onclick="summary(false)">Summary</button><button class="btn b-ghost" onclick="pdf(false)">PDF sheet</button></div>
@@ -137,7 +149,7 @@ function key(k){const a=$('#a');if(k==='C')a.value='';else if(k==='⌫')a.value=
 function prev(){const v=$('#a').value,r=calc(v),p=$('#ap');if(p)p.textContent=v&&isNaN(+v)&&!isNaN(r)?'= '+fmt(r):''}
 function entry(type,eid){
   const ed=eid?find(cur).entries.find(x=>x.id===eid):null;
-  cat=ed?catOf(ed):'Food';pend=[];
+  cat=ed?catOf(ed):'Food';pend=[];perr='';
   const chips=type==='spent'?`<label>Category</label><div class="chips">${CATS.map(c=>`<button class="chip${c===cat?' on':''}" onclick="pick(this,'${c}')">${c}</button>`).join('')}</div>`:'';
   sheet(`<h1 class="${type==='spent'?'red':'green'}">${ed?(type==='spent'?'Edit expense':'Edit payment'):type==='spent'?'I spent':'I received from company'}</h1>
   <label>Amount (₹): use the keypad to add, subtract, multiply or divide</label><input id="a" class="amtin" type="text" inputmode="none" autocomplete="off" placeholder="0" value="${ed?ed.amt:''}" oninput="prev()"><div id="ap"></div>${KP}${chips}
@@ -149,7 +161,8 @@ function entry(type,eid){
 function pick(el,c){cat=c;document.querySelectorAll('.chip').forEach(x=>x.classList.remove('on'));el.classList.add('on')}
 async function saveEntry(type,eid){
   const amt=calc($('#a').value);if(!(amt>0)){$('#a').focus();return}
-  const files=await store(pend);
+  perr='';const files=await store(pend);
+  if(files.length<pend.length){files.forEach(f=>fdel(f.id));drawPend();return}
   const s=find(cur),ed=eid&&s.entries.find(x=>x.id===eid),v={amt,cat:type==='spent'?cat:'',note:$('#no').value.trim(),date:$('#d').value||today()};
   if(ed){Object.assign(ed,v);ed.files=(ed.files||[]).concat(files)}else s.entries.push({id:uid(),type,files,...v});
   pend=[];save();closeS();openShoot(cur);
@@ -157,9 +170,9 @@ async function saveEntry(type,eid){
 async function entryMenu(id){
   const e=find(cur).entries.find(x=>x.id===id),fl=e.files||[];
   const th=(await Promise.all(fl.map(async f=>{const r=await fget(f.id).catch(()=>null);return r?`<div class="th" onclick="openFile('${f.id}','${id}')">${r.type==='image'?`<img src="${r.data}" alt="">`:'PDF'}</div>`:''}))).join('');
-  sheet(`<h1>${e.type==='spent'?esc(e.cat):'Received'}: ${fmt(e.amt)}</h1><div style="color:var(--mut)">${dfmt(e.date)}${e.note?' · '+esc(e.note):''}</div>${th?`<label>Bills (tap to open)</label><div class="thumbs">${th}</div>`:''}<div class="gap"></div>${e.type==='spent'?`<input id="fi" type="file" accept="image/*,application/pdf" multiple hidden onchange="addMore(this,'${id}')"><button class="btn b-ghost" onclick="$('#fi').click()">Add photo or PDF</button><div class="gap"></div>`:''}<button class="btn b-ink" onclick="entry('${e.type}','${id}')">Edit entry</button><div class="gap"></div><button class="btn b-del" onclick="delEntry('${id}')">Delete entry</button><div class="gap"></div><button class="btn b-ghost" onclick="closeS()">Close</button>`);
+  sheet(`<h1>${e.type==='spent'?esc(e.cat):'Received'}: ${fmt(e.amt)}</h1><div style="color:var(--mut)">${dfmt(e.date)}${e.note?' · '+esc(e.note):''}</div>${th?`<label>Bills (tap to open)</label><div class="thumbs">${th}</div>`:''}${perr?`<div style="color:var(--red);font-size:13px;margin-top:8px">${perr}</div>`:''}<div class="gap"></div>${e.type==='spent'?`<input id="fi" type="file" accept="image/*,application/pdf" multiple hidden onchange="addMore(this,'${id}')"><button class="btn b-ghost" onclick="$('#fi').click()">Add photo or PDF</button><div class="gap"></div>`:''}<button class="btn b-ink" onclick="entry('${e.type}','${id}')">Edit entry</button><div class="gap"></div><button class="btn b-del" onclick="delEntry('${id}')">Delete entry</button><div class="gap"></div><button class="btn b-ghost" onclick="closeS()">Close</button>`);
 }
-async function addMore(inp,id){const e=find(cur).entries.find(x=>x.id===id);e.files=(e.files||[]).concat(await store(await readAll(inp)));save();openShoot(cur);entryMenu(id)}
+async function addMore(inp,id){const e=find(cur).entries.find(x=>x.id===id);e.files=(e.files||[]).concat(await store(await readAll(inp)));save();openShoot(cur);await entryMenu(id);perr=''}
 async function openFile(fid,id){
   const r=await fget(fid).catch(()=>null);if(!r)return;
   if(r.type==='image'){sheet(`<img src="${r.data}" alt="Bill" style="width:100%;border-radius:10px"><div class="two" style="margin-top:12px"><button class="btn b-ghost" onclick="entryMenu('${id}')">Back</button><button class="btn b-del" onclick="delBill('${fid}','${id}')">Delete bill</button></div>`);return}
@@ -175,7 +188,7 @@ function totals(ss){const t={};CATS.forEach(c=>t[c]=0);ss.forEach(s=>s.entries.f
 function sumText(ss,title){
   const t=totals(ss),sp=ss.reduce((a,s)=>a+spent(s),0),gt=ss.reduce((a,s)=>a+got(s),0);
   let x=`*${title}*\n`;
-  if(ss.length===1)x+=dfmt(ss[0].date)+(ss[0].client?', '+ss[0].client:'')+'\n';
+  if(ss.length===1)x+=(ss[0].client&&ss[0].name?ss[0].name+', ':'')+dfmt(ss[0].date)+'\n';
   x+='\n';
   CATS.forEach(c=>{if(t[c]>0)x+=`${c}: ${fmt(t[c])}\n`});
   if(!sp)x+='No expenses yet\n';
@@ -185,9 +198,22 @@ function sumText(ss,title){
   if(ss.length>1)x+='\n\nBy shoot:\n'+ss.map(s=>`${s.name}: ${fmt(bal(s))}`).join('\n');
   return x;
 }
+function clientText(){
+  if(!S.shoots.length)return 'No shoots yet';
+  const g={};
+  S.shoots.forEach(s=>{const n=(s.client||'').trim()||'No client',k=n.toLowerCase();(g[k]=g[k]||{n,ss:[]}).ss.push(s)});
+  const L=Object.values(g).sort((a,b)=>(a.n==='No client')-(b.n==='No client')||a.n.localeCompare(b.n));
+  let x='*Expense summary: by client*\n\n';
+  L.forEach(c=>{x+=`${c.n}: ${fmt(c.ss.reduce((a,s)=>a+spent(s),0))}\n`});
+  x+='\n';
+  const sp=S.shoots.reduce((a,s)=>a+spent(s),0),gt=S.shoots.reduce((a,s)=>a+got(s),0);
+  x+=`*Total spent: ${fmt(sp)}*\n`;
+  x+=`Received: ${fmt(gt)}\n*Balance to receive: ${fmt(sp-gt)}*`;
+  return x.trim();
+}
 function summary(all){
   const ss=all?S.shoots:[find(cur)];
-  sheet(`<h1>Summary</h1><textarea id="ct" class="claim" readonly>${esc(sumText(ss,all?'Expense summary: all shoots':'Expense summary: '+ss[0].name))}</textarea><div class="gap"></div><div class="two"><button id="cb" class="btn b-ink" onclick="copyC()">Copy for WhatsApp</button><button class="btn b-ghost" onclick="shareC()">Share</button></div>`);
+  sheet(`<h1>Summary</h1><textarea id="ct" class="claim" readonly>${esc(all?clientText():sumText(ss,'Expense summary: '+(ss[0].client||ss[0].name)))}</textarea><div class="gap"></div><div class="two"><button id="cb" class="btn b-ink" onclick="copyC()">Copy for WhatsApp</button><button class="btn b-ghost" onclick="shareC()">Share</button></div>`);
 }
 async function shareC(){
   const t=$('#ct').value;
@@ -221,8 +247,8 @@ async function pdf(all){
   y=38;
   for(const s of ss){
     need(50);
-    d.setFont('helvetica','bold');d.setFontSize(13);d.setTextColor(20);d.text(T(s.name),M,y);y+=5.5;
-    d.setFont('helvetica','normal');d.setFontSize(9);d.setTextColor(110);d.text(T((s.client?s.client+', ':'')+dfmt(s.date)),M,y);y+=5;
+    d.setFont('helvetica','bold');d.setFontSize(13);d.setTextColor(20);d.text(T(s.client||s.name),M,y);y+=5.5;
+    d.setFont('helvetica','normal');d.setFontSize(9);d.setTextColor(110);d.text(T((s.client&&s.name?s.name+', ':'')+dfmt(s.date)),M,y);y+=5;
     hdr();
     for(const e of [...s.entries].sort((a,b)=>a.date.localeCompare(b.date))){
       if(y+7>280){d.addPage();y=16;hdr()}
@@ -250,13 +276,14 @@ async function pdf(all){
   for(const s of ss)for(const e of s.entries)for(const f of e.files||[]){
     const r=await fget(f.id).catch(()=>null);if(!r||r.type!=='image')continue;
     d.addPage();d.setFont('helvetica','bold');d.setFontSize(10);d.setTextColor(30);
-    d.text(T(`Bill: ${s.name}, ${e.cat||''} ${R(e.amt)}, ${dfmt(e.date)}`),M,16);
+    d.text(T(`Bill: ${s.client||s.name}, ${e.cat||''} ${R(e.amt)}, ${dfmt(e.date)}`),M,16);
     try{const p=d.getImageProperties(r.data),k=Math.min((W-2*M)/p.width,255/p.height);d.addImage(r.data,'JPEG',M,22,p.width*k,p.height*k)}catch(_){}
   }
   const n=d.getNumberOfPages();
   for(let i=1;i<=n;i++){d.setPage(i);d.setFont('helvetica','normal');d.setFontSize(8);d.setTextColor(140);d.text(`Page ${i} of ${n}`,W/2,291,{align:'center'})}
-  try{await dl.save({filename:'ShootBook-'+(all?'all-shoots':T(ss[0].name).replace(/[^\w]+/g,'-'))+'.pdf',data:d.output('blob')})}catch(e){if(!e||e.code!=='declined')note('The PDF could not be saved. Try again.')}
+  try{await dl.save({filename:'ShootBook-'+(all?'all-shoots':T(ss[0].client||ss[0].name).replace(/[^\w]+/g,'-'))+'.pdf',data:d.output('blob')})}catch(e){if(!e||e.code!=='declined')note('The PDF could not be saved. Try again.')}
 }
+try{navigator.storage&&navigator.storage.persist&&navigator.storage.persist()}catch(e){}
 home();
 if('serviceWorker' in navigator&&location.protocol.startsWith('http'))navigator.serviceWorker.register('sw.js').catch(()=>{});
 </script></body></html>
