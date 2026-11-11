@@ -53,23 +53,51 @@ const fget=async k=>{const d=await idb();return new Promise((ok,no)=>{const r=d.
 const fdel=async k=>{try{const d=await idb();d.transaction('f','readwrite').objectStore('f').delete(k)}catch(e){}};
 const rd=f=>new Promise((ok,no)=>{const r=new FileReader();r.onload=()=>ok(r.result);r.onerror=no;r.readAsDataURL(f)});
 const blobOf=u=>{const[h,b]=u.split(','),m=h.match(/:(.*?);/)[1],s=atob(b),a=new Uint8Array(s.length);for(let i=0;i<s.length;i++)a[i]=s.charCodeAt(i);return new Blob([a],{type:m})};
+const kb=u=>u.length*.75/1024;
+function shrink(src,w,h,T=250,MX=1280){
+  let k=Math.min(1,MX/Math.max(w,h)),q=.72,u='';
+  for(let i=0;i<6;i++){
+    const c=document.createElement('canvas');c.width=Math.max(1,Math.round(w*k));c.height=Math.max(1,Math.round(h*k));
+    const x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);x.drawImage(src,0,0,c.width,c.height);
+    u=c.toDataURL('image/jpeg',q);c.width=c.height=0;
+    if(kb(u)<=T)break;
+    if(q>.45)q-=.1;else k*=.8;
+  }
+  return u;
+}
+async function pdfPages(f){
+  const V='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/';
+  if(!window.pdfjsLib)await new Promise((ok,no)=>{const s=document.createElement('script');s.src=V+'pdf.min.js';s.onload=ok;s.onerror=no;document.head.appendChild(s)});
+  pdfjsLib.GlobalWorkerOptions.workerSrc=V+'pdf.worker.min.js';
+  const doc=await pdfjsLib.getDocument({data:new Uint8Array(await f.arrayBuffer())}).promise,out=[];
+  if(doc.numPages>12)throw new Error('long');
+  for(let i=1;i<=doc.numPages;i++){
+    const pg=await doc.getPage(i),v=pg.getViewport({scale:1}),vp=pg.getViewport({scale:Math.min(2,1500/Math.max(v.width,v.height))}),c=document.createElement('canvas');
+    c.width=Math.round(vp.width);c.height=Math.round(vp.height);
+    const x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);
+    await pg.render({canvasContext:x,viewport:vp}).promise;
+    out.push({id:uid(),name:(f.name||'bill').replace(/\.pdf$/i,'')+' p'+i+'.jpg',type:'image',data:shrink(c,c.width,c.height)});
+    c.width=c.height=0;
+  }
+  return out;
+}
 let perr='';
 async function prep(f){
   if(!f.type.startsWith('image/')){
+    const pdf=f.type==='application/pdf'||/\.pdf$/i.test(f.name||'');
+    if(f.size>40e6)throw new Error('big');
+    if(pdf&&f.size>1.5e6){try{const p=await pdfPages(f);if(p.length)return p}catch(e){}}
     if(f.size>15e6)throw new Error('big');
-    return{id:uid(),name:f.name||'bill',type:f.type==='application/pdf'?'pdf':'file',data:await rd(f)};
+    return{id:uid(),name:f.name||'bill',type:pdf?'pdf':'file',data:await rd(f)};
   }
   let b;
   try{b=await createImageBitmap(f)}catch(e){b=await new Promise((ok,no)=>{const u=URL.createObjectURL(f),i=new Image();i.onload=()=>{URL.revokeObjectURL(u);ok(i)};i.onerror=no;i.src=u})}
-  const w=b.width,h=b.height,k=Math.min(1,1280/Math.max(w,h)),c=document.createElement('canvas');
-  c.width=Math.max(1,Math.round(w*k));c.height=Math.max(1,Math.round(h*k));
-  c.getContext('2d').drawImage(b,0,0,c.width,c.height);if(b.close)b.close();
-  const data=c.toDataURL('image/jpeg',.65);c.width=c.height=0;
+  const data=shrink(b,b.width,b.height);if(b.close)b.close();
   return{id:uid(),name:f.name||'bill.jpg',type:'image',data};
 }
-async function readAll(inp){perr='';const out=[];for(const f of [...inp.files]){try{out.push(await prep(f))}catch(e){perr='Could not read '+(f.name||'a file')+'. PDFs must be under 15 MB, or try taking the photo again.'}}inp.value='';return out}
+async function readAll(inp){perr='';const out=[];for(const f of [...inp.files]){try{out.push(...[].concat(await prep(f)))}catch(e){perr='Could not read '+(f.name||'a file')+'. Try again with a smaller file.'}}inp.value='';return out}
 async function store(ps){const r=[];for(const p of ps){try{await fput(p.id,{name:p.name,type:p.type,data:p.data});r.push({id:p.id,name:p.name,type:p.type})}catch(e){perr='Not enough storage on this phone to save the bill. Free some space and try again.'}}return r}
-async function addFiles(inp){pend.push(...await readAll(inp));drawPend()}
+async function addFiles(inp){const b=$('#pend');if(b)b.textContent='Preparing bill…';pend.push(...await readAll(inp));drawPend()}
 function drawPend(){const b=$('#pend');if(b)b.innerHTML=pend.map((p,i)=>`<div class="th">${p.type==='image'?`<img src="${p.data}" alt="">`:'PDF'}<b onclick="pend.splice(${i},1);drawPend()">×</b></div>`).join('')+(perr?`<div style="flex-basis:100%;color:var(--red);font-size:13px">${perr}</div>`:'')}
 const bt=e=>{const n=(e.files||[]).length;return n?(e.note?' · ':'')+n+(n>1?' bills':' bill'):''};
 let S={shoots:[]},cur=null,cat='Fuel';
@@ -244,7 +272,7 @@ async function pdf(all){
   d.setFillColor(18,22,28);d.rect(0,0,W,26,'F');d.setTextColor(255);d.setFont('helvetica','bold');d.setFontSize(17);d.text('Expense Balance Sheet',M,13);
   d.setFont('helvetica','normal');d.setFontSize(9);d.text('Generated '+new Date().toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'}),M,20);d.text('Prepared by '+T(who()),W-M,20,{align:'right'});
   d.setFillColor(18,22,28);for(let i=0;i<W;i+=8)d.rect(i,26,4,3,'F');
-  y=38;
+  y=38;const bills=[],links=[];
   for(const s of ss){
     need(50);
     d.setFont('helvetica','bold');d.setFontSize(13);d.setTextColor(20);d.text(T(s.client||s.name),M,y);y+=5.5;
@@ -254,7 +282,14 @@ async function pdf(all){
       if(y+7>280){d.addPage();y=16;hdr()}
       d.setFont('helvetica','normal');d.setFontSize(8.5);d.setTextColor(30);
       d.text(dfmt(e.date),M+2,y+4.6);d.text(e.type==='spent'?T(e.cat):'Received',M+30,y+4.6);
-      d.text(d.splitTextToSize(T(e.note)+(e.files&&e.files.length?' [bill]':''),58)[0]||'',M+55,y+4.6);
+      const bn=[],pdfs=(e.files||[]).filter(f=>f.type!=='image').length;
+      (e.files||[]).forEach(f=>{if(f.type==='image'){bills.push({s,e,f,n:bills.length+1});bn.push(bills.length)}});
+      const nt=d.splitTextToSize(T(e.note),bn.length||pdfs?38:58)[0]||'';
+      d.text(nt,M+55,y+4.6);
+      let nx=M+55+d.getTextWidth(nt)+2;
+      d.setTextColor(30,90,200);
+      bn.forEach(n=>{const w=d.getTextWidth('#'+n);d.text('#'+n,nx,y+4.6);links.push({pg:d.internal.getCurrentPageInfo().pageNumber,x:nx,y:y+0.8,w,h:5,n});nx+=w+2});
+      if(pdfs)d.text('[PDF]',nx,y+4.6);
       if(e.type==='spent'){d.setTextColor(190,40,35);d.text(R(e.amt),W-M-32,y+4.6,{align:'right'})}else{d.setTextColor(23,128,61);d.text(R(e.amt),W-M-2,y+4.6,{align:'right'})}
       d.setDrawColor(225);d.line(M,y+7,W-M,y+7);y+=7;
     }
@@ -273,12 +308,23 @@ async function pdf(all){
   }
   const pn=[];ss.forEach(s=>s.entries.forEach(e=>(e.files||[]).forEach(f=>{if(f.type!=='image')pn.push(T(f.name))})));
   if(pn.length){need(14);d.setFont('helvetica','normal');d.setFontSize(8.5);d.setTextColor(110);d.text(d.splitTextToSize('PDF bills (kept in the app, not shown here): '+pn.join(', '),W-2*M),M,y)}
-  for(const s of ss)for(const e of s.entries)for(const f of e.files||[]){
+  let slot=0;const bp={},GW=(W-2*M-6)/2,GH=124;
+  for(const {s,e,f,n:bno} of bills){
     const r=await fget(f.id).catch(()=>null);if(!r||r.type!=='image')continue;
-    d.addPage();d.setFont('helvetica','bold');d.setFontSize(10);d.setTextColor(30);
-    d.text(T(`Bill: ${s.client||s.name}, ${e.cat||''} ${R(e.amt)}, ${dfmt(e.date)}`),M,16);
-    try{const p=d.getImageProperties(r.data),k=Math.min((W-2*M)/p.width,255/p.height);d.addImage(r.data,'JPEG',M,22,p.width*k,p.height*k)}catch(_){}
+    if(slot%4===0){d.addPage();d.setFont('helvetica','bold');d.setFontSize(9);d.setTextColor(110);d.text('Bills (tap a # number in the table to jump here)',M,12)}
+    bp[bno]=d.internal.getCurrentPageInfo().pageNumber;
+    const cx=M+(slot%2)*(GW+6),cy=18+Math.floor((slot%4)/2)*(GH+8);
+    d.setDrawColor(220);d.rect(cx-1,cy-4,GW+2,GH,'S');
+    d.setFont('helvetica','normal');d.setFontSize(7.5);d.setTextColor(30);
+    d.text(d.splitTextToSize(T(`#${bno}  ${s.client||s.name}, ${e.cat||''} ${R(e.amt)}, ${dfmt(e.date)}`),GW)[0],cx,cy);
+    try{
+      const im=await new Promise(ok=>{const i=new Image();i.onload=()=>ok(i);i.onerror=()=>ok(null);i.src=r.data});
+      const data=im?shrink(im,im.width,im.height,110,1000):r.data,p=d.getImageProperties(data),k=Math.min(GW/p.width,(GH-5)/p.height);
+      d.addImage(data,'JPEG',cx,cy+2,p.width*k,p.height*k);
+    }catch(_){}
+    slot++;
   }
+  links.forEach(l=>{if(bp[l.n]){d.setPage(l.pg);d.link(l.x,l.y,l.w,l.h,{pageNumber:bp[l.n]})}});
   const n=d.getNumberOfPages();
   for(let i=1;i<=n;i++){d.setPage(i);d.setFont('helvetica','normal');d.setFontSize(8);d.setTextColor(140);d.text(`Page ${i} of ${n}`,W/2,291,{align:'center'})}
   try{await dl.save({filename:'ShootBook-'+(all?'all-shoots':T(ss[0].client||ss[0].name).replace(/[^\w]+/g,'-'))+'.pdf',data:d.output('blob')})}catch(e){if(!e||e.code!=='declined')note('The PDF could not be saved. Try again.')}
